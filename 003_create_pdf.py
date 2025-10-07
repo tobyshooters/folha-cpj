@@ -310,8 +310,6 @@ def main():
         print(f"[{idx}/{total_pages}] Adding page for {name}")
 
         image_path, source = find_image_file(name, image_dir, available_pictures, crossref_cache, new_crossrefs)
-        print(image_path, source)
-
         add_journalist_page(c, name, date, affiliation, image_path)
 
         # Track statistics
