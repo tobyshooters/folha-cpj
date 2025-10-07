@@ -66,11 +66,30 @@ def get_available_pictures(image_dir):
     return pictures
 
 
-def find_image_file(name, image_dir, available_pictures, crossref_cache=None, new_crossrefs=None):
+def find_image_file(name, image_dir, available_pictures, crossref_cache=None, new_crossrefs=None, index=None, overrides_dir=None):
     """Find the image file for a given person name, with fuzzy matching fallback.
-    Returns tuple: (filepath, source) where source is 'cpj', 'gigaza', or None
+    Returns tuple: (filepath, source) where source is 'cpj', 'gigaza', 'override', or None
     """
     safe_name = sanitize_filename(name)
+
+    # Check overrides directory first (highest priority)
+    if overrides_dir and index is not None and os.path.exists(overrides_dir):
+        # Look for files with the index prefix
+        for filename in os.listdir(overrides_dir):
+            if filename.startswith(f"{index:02d}_") or filename.startswith(f"{index}_"):
+                filepath = os.path.join(overrides_dir, filename)
+                if os.path.isfile(filepath):
+                    return (filepath, 'override')
+
+    # Ignore pictures non-override pictures for these journalists.
+    if "Iyad Matar" in name:
+        return None, None
+    if "Majed Kashko" in name:
+        return None, None
+    if "Mamdouh Qanita" in name:
+        return None, None
+    if "Shaima El-Gazzar" in name:
+        return None, None
 
     # Try exact match first
     for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
@@ -265,6 +284,7 @@ def save_crossreference_csv(crossref_file, new_crossrefs):
 def main():
     csv_file = '000_cpj-people-list-2025-10-07_02-08-13.csv'
     image_dir = 'profile_pictures'
+    overrides_dir = 'overrides'
     output_pdf = 'lambelambe.pdf'
     crossref_file = 'cpj_gigaza_crossreference.csv'
 
@@ -298,6 +318,7 @@ def main():
         'with_image': 0,
         'cpj_images': 0,
         'gigaza_images': 0,
+        'override_images': 0,
         'no_image': 0
     }
     new_crossrefs = []
@@ -309,7 +330,12 @@ def main():
 
         print(f"[{idx}/{total_pages}] Adding page for {name}")
 
-        image_path, source = find_image_file(name, image_dir, available_pictures, crossref_cache, new_crossrefs)
+        image_path, source = find_image_file(name, image_dir, available_pictures, crossref_cache, new_crossrefs, index=idx, overrides_dir=overrides_dir)
+
+        if "Roee Idan" in name:
+            print("skipping")
+            continue
+
         add_journalist_page(c, name, date, affiliation, image_path)
 
         # Track statistics
@@ -320,6 +346,8 @@ def main():
                 stats['cpj_images'] += 1
             elif source == 'gigaza':
                 stats['gigaza_images'] += 1
+            elif source == 'override':
+                stats['override_images'] += 1
         else:
             stats['no_image'] += 1
 
@@ -336,6 +364,7 @@ def main():
     print(f"\nPDF created: {output_pdf}")
     print(f"Total pages: {total_pages}")
     print(f"Pages with images: {stats['with_image']}/{stats['total']}")
+    print(f"  - From overrides: {stats['override_images']}")
     print(f"  - From CPJ: {stats['cpj_images']}")
     print(f"  - From Gigaza: {stats['gigaza_images']}")
     print(f"Pages without images: {stats['no_image']}")
