@@ -66,7 +66,7 @@ def get_available_pictures(image_dir):
     return pictures
 
 
-def find_image_file(name, image_dir, available_pictures=None, crossref_cache=None):
+def find_image_file(name, image_dir, available_pictures, crossref_cache=None, new_crossrefs=None):
     """Find the image file for a given person name, with fuzzy matching fallback.
     Returns tuple: (filepath, source) where source is 'cpj', 'gigaza', or None
     """
@@ -89,29 +89,42 @@ def find_image_file(name, image_dir, available_pictures=None, crossref_cache=Non
             return (filepath, 'gigaza')
 
     # If no exact match and we have available pictures, try fuzzy matching
-    if available_pictures:
-        normalized_name = normalize_name(name)
-        best_match = None
-        best_score = 0.7  # Minimum threshold for matching
+    normalized_name = normalize_name(name)
+    best_match = None
+    best_score = 0.0
 
-        for pic_name, pic_path in available_pictures.items():
-            normalized_pic = normalize_name(pic_name)
-            score = similarity(normalized_name, normalized_pic)
+    for pic_name, pic_path in available_pictures.items():
+        normalized_pic = normalize_name(pic_name)
+        score = similarity(normalized_name, normalized_pic)
 
-            if score > best_score:
-                best_score = score
-                best_match = pic_path
+        if score > best_score:
+            best_score = score
+            best_match = pic_path
 
-        if best_match:
-            print(f"  Fuzzy match score: {best_score:.2f} {name:<33} {os.path.basename(best_match)}")
+    if best_match:
+        print(f"  Fuzzy match score: {best_score:.2f} {name:<33} {os.path.basename(best_match)}")
+        response = input(f"    Accept this match? (y/n): ").strip().lower()
+        if response == 'y' or response == 'yes':
+            # Record the accepted match
+            if new_crossrefs is not None:
+                new_crossrefs.append({
+                    'cpj_name': name,
+                    'gigaza_name': os.path.basename(best_match),
+                    'score': f"{best_score:.2f}",
+                    'accepted': 'yes'
+                })
+            return (best_match, 'gigaza')
 
-            # If score is less than 0.8, ask for manual approval
-            response = input(f"    Accept this match? (y/n): ").strip().lower()
-            if response == 'y' or response == 'yes':
-                return (best_match, 'gigaza')
-
-            print(f"    Ignored")
-            return (None, None)
+        # Record the rejected match
+        if new_crossrefs is not None:
+            new_crossrefs.append({
+                'cpj_name': name,
+                'gigaza_name': os.path.basename(best_match),
+                'score': f"{best_score:.2f}",
+                'accepted': 'no'
+            })
+        print(f"    Ignored")
+        return (None, None)
 
     return (None, None)
 
@@ -223,6 +236,32 @@ def add_journalist_page(c, name, date, affiliation, image_path):
         except Exception as e:
             print(f"  Error adding image for {name}: {e}")
 
+def save_crossreference_csv(crossref_file, new_crossrefs):
+    """Append new crossreferences to the CSV file and sort it."""
+    if not new_crossrefs:
+        return
+
+    # Read existing data
+    existing_data = []
+    if os.path.exists(crossref_file):
+        with open(crossref_file, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            existing_data = list(reader)
+
+    # Combine and sort
+    all_data = existing_data + new_crossrefs
+    all_data.sort(key=lambda x: x['cpj_name'])
+
+    # Write back
+    with open(crossref_file, 'w', encoding='utf-8', newline='') as f:
+        fieldnames = ['cpj_name', 'gigaza_name', 'score', 'accepted']
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(all_data)
+
+    print(f"\nSaved {len(new_crossrefs)} new crossreferences to {crossref_file}")
+
+
 def main():
     csv_file = '000_cpj-people-list-2025-10-07_02-08-13.csv'
     image_dir = 'profile_pictures'
@@ -253,7 +292,7 @@ def main():
 
     print(f"Creating PDF with {total_pages} pages...")
 
-    # Track statistics
+    # Track statistics and new crossreferences
     stats = {
         'total': 0,
         'with_image': 0,
@@ -261,6 +300,7 @@ def main():
         'gigaza_images': 0,
         'no_image': 0
     }
+    new_crossrefs = []
 
     for idx, person in enumerate(journalists, 1):
         name = person['Name']
@@ -269,7 +309,9 @@ def main():
 
         print(f"[{idx}/{total_pages}] Adding page for {name}")
 
-        image_path, source = find_image_file(name, image_dir, available_pictures, crossref_cache)
+        image_path, source = find_image_file(name, image_dir, available_pictures, crossref_cache, new_crossrefs)
+        print(image_path, source)
+
         add_journalist_page(c, name, date, affiliation, image_path)
 
         # Track statistics
@@ -289,6 +331,10 @@ def main():
 
     # Save PDF
     c.save()
+
+    # Save new crossreferences to CSV
+    save_crossreference_csv(crossref_file, new_crossrefs)
+
     print(f"\nPDF created: {output_pdf}")
     print(f"Total pages: {total_pages}")
     print(f"Pages with images: {stats['with_image']}/{stats['total']}")
