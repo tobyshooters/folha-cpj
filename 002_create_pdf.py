@@ -34,76 +34,61 @@ def find_image_file(name, image_dir):
     return None
 
 
+def wrap_text(c, text, font_name, font_size, max_width):
+    """Wrap text into multiple lines if needed."""
+    words = text.split()
+    lines = []
+    line = ""
+
+    for word in words:
+        test_line = line + " " + word if line else word
+        if c.stringWidth(test_line, font_name, font_size) <= max_width:
+            line = test_line
+        else:
+            if line:
+                lines.append(line)
+            line = word
+
+    if line:
+        lines.append(line)
+
+    return lines
+
+
 def add_journalist_page(c, name, date, affiliation, image_path):
     """Add a page for one journalist to the PDF."""
     width, height = A4
 
-    # All dimensions derived from IMAGE_HEIGHT_INCHES
-    top_margin = 0.5 * inch
-    image_text_gap = IMAGE_HEIGHT_INCHES * 0.08 * inch
+    # Font sizes
     name_size = int(IMAGE_HEIGHT_INCHES * 5.5)
     date_size = int(IMAGE_HEIGHT_INCHES * 3.5)
     affiliation_size = int(IMAGE_HEIGHT_INCHES * 3.2)
 
-    # Calculate vertical start
-    y_start = height - top_margin
+    # Fixed position for name: 2/3 down the page
+    name_y_position = height * (1 - 2/3)
 
-    # Add image if available
-    has_image = image_path and os.path.exists(image_path)
+    # Text area setup
+    max_text_width = width - 1 * inch
 
-    if has_image:
-        try:
-            img = Image.open(image_path)
-            img_width, img_height = img.size
+    # Wrap name text
+    name_lines = wrap_text(c, name, "Helvetica-Bold", name_size, max_text_width)
 
-            # Calculate scaled dimensions based on IMAGE_HEIGHT_INCHES
-            max_width = width - (2 * 0.5 * inch)  # 0.5 inch margin on each side
-            max_height = IMAGE_HEIGHT_INCHES * inch
+    # Calculate text block height
+    text_y = name_y_position
 
-            # Calculate aspect ratio
-            aspect = img_width / img_height
-            if aspect > max_width / max_height:
-                display_width = max_width
-                display_height = max_width / aspect
-            else:
-                display_height = max_height
-                display_width = max_height * aspect
-
-            # Center the image horizontally
-            x_pos = (width - display_width) / 2
-            y_pos = y_start - display_height
-
-            c.drawImage(image_path, x_pos, y_pos,
-                       width=display_width, height=display_height,
-                       preserveAspectRatio=True, mask='auto')
-
-            # Update y position for text below image
-            y_start = y_pos - image_text_gap
-
-        except Exception as e:
-            print(f"  Error adding image for {name}: {e}")
-            has_image = False
-
-    if not has_image:
-        # If no image, center text vertically
-        total_text_height = name_size * 1.3 + date_size * 1.3 + affiliation_size * 2.5
-        y_start = height / 2 + total_text_height / 2
-
-    # Add name (bold, scaled)
+    # Draw name (bold, wrapped)
     c.setFont("Helvetica-Bold", name_size)
-    c.drawCentredString(width/2, y_start, name)
-    y_start -= (name_size * 1.3)
+    for line in name_lines:
+        c.drawCentredString(width/2, text_y, line)
+        text_y -= (name_size * 1.3)
 
-    # Add date (scaled)
+    # Add date
     c.setFont("Helvetica", date_size)
-    c.drawCentredString(width/2, y_start, date)
-    y_start -= (date_size * 1.3)
+    c.drawCentredString(width/2, text_y, date)
+    text_y -= (date_size * 1.3)
 
-    # Add affiliation (italic, scaled)
+    # Add affiliation (italic, wrapped by comma)
     c.setFont("Helvetica-Oblique", affiliation_size)
-
-    # Simple text wrapping for affiliation
-    max_line_width = width - 1*inch
     if affiliation:
         words = affiliation.split(',')
         line = ""
@@ -111,18 +96,50 @@ def add_journalist_page(c, name, date, affiliation, image_path):
             word = word.strip()
             test_line = line + ", " + word if line else word
 
-            # Simple check - if too long, print line and start new one
-            if c.stringWidth(test_line, "Helvetica-Oblique", affiliation_size) < max_line_width:
+            if c.stringWidth(test_line, "Helvetica-Oblique", affiliation_size) < max_text_width:
                 line = test_line
             else:
                 if line:
-                    c.drawCentredString(width/2, y_start, line)
-                    y_start -= (affiliation_size * 1.2)
+                    c.drawCentredString(width/2, text_y, line)
+                    text_y -= (affiliation_size * 1.2)
                 line = word
 
-        # Print remaining line
         if line:
-            c.drawCentredString(width/2, y_start, line)
+            c.drawCentredString(width/2, text_y, line)
+
+    # Add image if available - fill top portion above name
+    if image_path and os.path.exists(image_path):
+        try:
+            img = Image.open(image_path)
+            img_width, img_height = img.size
+
+            # Available space: from top to just above name position
+            top_margin = 0.5 * inch
+            image_bottom_margin = 0.3 * inch
+
+            available_height = (height - top_margin) - (name_y_position + name_size * len(name_lines) * 1.3 + image_bottom_margin)
+            max_width_img = width - (2 * 0.5 * inch)
+
+            # Calculate scaled dimensions preserving aspect ratio
+            aspect = img_width / img_height
+            if aspect > max_width_img / available_height:
+                display_width = max_width_img
+                display_height = max_width_img / aspect
+            else:
+                display_height = available_height
+                display_width = available_height * aspect
+
+            # Center the image horizontally
+            x_pos = (width - display_width) / 2
+            # Position from top
+            y_pos = height - top_margin - display_height
+
+            c.drawImage(image_path, x_pos, y_pos,
+                       width=display_width, height=display_height,
+                       preserveAspectRatio=True, mask='auto')
+
+        except Exception as e:
+            print(f"  Error adding image for {name}: {e}")
 
 def main():
     csv_file = '000_cpj-people-list-2025-10-07_02-08-13.csv'
