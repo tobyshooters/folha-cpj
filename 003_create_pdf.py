@@ -10,6 +10,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.pdfgen import canvas
 from PIL import Image
+from difflib import SequenceMatcher
 
 IMAGE_HEIGHT_INCHES = 7.5  # Height of photo in inches (A4 height is ~11.7 inches)
 
@@ -21,17 +22,98 @@ def sanitize_filename(name):
     return name
 
 
-def find_image_file(name, image_dir):
-    """Find the image file for a given person name."""
+def similarity(str1, str2):
+    """Calculate similarity ratio between two strings."""
+    return SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+
+
+def normalize_name(name):
+    """Normalize name for better matching."""
+    return re.sub(r'\s+', ' ', name.lower().replace('-', ' ').replace('.', ' ')).strip()
+
+
+def load_crossreference_cache(cache_file):
+    """Load the crossreference cache from CSV.
+    Returns a dict mapping cpj_name to either gigaza_name (if accepted) or None (if rejected).
+    """
+    cache = {}
+    if not os.path.exists(cache_file):
+        return cache
+
+    with open(cache_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row['accepted'] == 'yes':
+                cache[row['cpj_name']] = row['gigaza_name']
+            elif row['accepted'] == 'no':
+                cache[row['cpj_name']] = None  # Mark as rejected
+
+    return cache
+
+
+def get_available_pictures(image_dir):
+    """Get all available profile pictures with their base names."""
+    pictures = {}
+    if not os.path.exists(image_dir):
+        return pictures
+
+    for filename in os.listdir(image_dir):
+        if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+            # Remove extension to get the name
+            base_name = re.sub(r'\.(jpg|jpeg|png|gif|webp)$', '', filename, flags=re.IGNORECASE)
+            pictures[base_name] = os.path.join(image_dir, filename)
+
+    return pictures
+
+
+def find_image_file(name, image_dir, available_pictures=None, crossref_cache=None):
+    """Find the image file for a given person name, with fuzzy matching fallback.
+    Returns tuple: (filepath, source) where source is 'cpj', 'gigaza', or None
+    """
     safe_name = sanitize_filename(name)
 
-    # Try common image extensions
+    # Try exact match first
     for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
         filepath = os.path.join(image_dir, f"{safe_name}{ext}")
         if os.path.exists(filepath):
-            return filepath
+            return (filepath, 'cpj')
 
-    return None
+    # Check crossreference cache
+    if crossref_cache and name in crossref_cache:
+        cached_filename = crossref_cache[name]
+        if cached_filename is None:
+            # Previously rejected, skip fuzzy matching
+            return (None, None)
+        filepath = os.path.join(image_dir, cached_filename)
+        if os.path.exists(filepath):
+            return (filepath, 'gigaza')
+
+    # If no exact match and we have available pictures, try fuzzy matching
+    if available_pictures:
+        normalized_name = normalize_name(name)
+        best_match = None
+        best_score = 0.7  # Minimum threshold for matching
+
+        for pic_name, pic_path in available_pictures.items():
+            normalized_pic = normalize_name(pic_name)
+            score = similarity(normalized_name, normalized_pic)
+
+            if score > best_score:
+                best_score = score
+                best_match = pic_path
+
+        if best_match:
+            print(f"  Fuzzy match score: {best_score:.2f} {name:<33} {os.path.basename(best_match)}")
+
+            # If score is less than 0.8, ask for manual approval
+            response = input(f"    Accept this match? (y/n): ").strip().lower()
+            if response == 'y' or response == 'yes':
+                return (best_match, 'gigaza')
+
+            print(f"    Ignored")
+            return (None, None)
+
+    return (None, None)
 
 
 def wrap_text(c, text, font_name, font_size, max_width):
@@ -145,6 +227,17 @@ def main():
     csv_file = '000_cpj-people-list-2025-10-07_02-08-13.csv'
     image_dir = 'profile_pictures'
     output_pdf = 'lambelambe.pdf'
+    crossref_file = 'cpj_gigaza_crossreference.csv'
+
+    # Load crossreference cache
+    print("Loading crossreference cache...")
+    crossref_cache = load_crossreference_cache(crossref_file)
+    print(f"Found {len(crossref_cache)} cached matches\n")
+
+    # Get all available pictures for fuzzy matching
+    print("Loading available profile pictures...")
+    available_pictures = get_available_pictures(image_dir)
+    print(f"Found {len(available_pictures)} profile pictures\n")
 
     # Read all journalists from CSV
     journalists = []
@@ -160,6 +253,15 @@ def main():
 
     print(f"Creating PDF with {total_pages} pages...")
 
+    # Track statistics
+    stats = {
+        'total': 0,
+        'with_image': 0,
+        'cpj_images': 0,
+        'gigaza_images': 0,
+        'no_image': 0
+    }
+
     for idx, person in enumerate(journalists, 1):
         name = person['Name']
         date = person['Date']
@@ -167,8 +269,19 @@ def main():
 
         print(f"[{idx}/{total_pages}] Adding page for {name}")
 
-        image_path = find_image_file(name, image_dir)
+        image_path, source = find_image_file(name, image_dir, available_pictures, crossref_cache)
         add_journalist_page(c, name, date, affiliation, image_path)
+
+        # Track statistics
+        stats['total'] += 1
+        if image_path:
+            stats['with_image'] += 1
+            if source == 'cpj':
+                stats['cpj_images'] += 1
+            elif source == 'gigaza':
+                stats['gigaza_images'] += 1
+        else:
+            stats['no_image'] += 1
 
         # Start new page (except for last one)
         if idx < total_pages:
@@ -178,6 +291,10 @@ def main():
     c.save()
     print(f"\nPDF created: {output_pdf}")
     print(f"Total pages: {total_pages}")
+    print(f"Pages with images: {stats['with_image']}/{stats['total']}")
+    print(f"  - From CPJ: {stats['cpj_images']}")
+    print(f"  - From Gigaza: {stats['gigaza_images']}")
+    print(f"Pages without images: {stats['no_image']}")
 
 if __name__ == '__main__':
     main()
